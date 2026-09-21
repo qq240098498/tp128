@@ -2,6 +2,9 @@ const crypto = require('crypto');
 const { load, save, MIN_OFFSET, MAX_OFFSET, MIN_YEAR, MAX_YEAR, MAX_NAME_LENGTH, MAX_DISPLAY_NAME_LENGTH, MAX_NOTE_LENGTH } = require('./store');
 const { ApiError, pickText } = require('./errors');
 
+// history 会经 convert 再引回本模块，这里懒加载以打断加载时的循环依赖
+const history = () => require('./history');
+
 // 时区名固定成地区加城市的写法，UTC 单独允许
 const NAME_PATTERN = /^([A-Za-z_]+(\/[A-Za-z_]+)+|UTC)$/;
 const WEEK_TOKENS = ['1', '2', '3', '4', 'last'];
@@ -200,6 +203,15 @@ function createZone(payload) {
   const now = new Date().toISOString();
   const created = { id: crypto.randomUUID(), ...checked, createdAt: now, updatedAt: now };
   data.zones.push(created);
+  // 新档案会进入下一次换算的范围，一定影响结果
+  history().appendChange(data, {
+    action: 'create',
+    zoneId: created.id,
+    zoneName: created.name,
+    changedAt: now,
+    affectsResult: true,
+    fields: [],
+  });
   save(data);
   return withOffsetText(created);
 }
@@ -224,8 +236,24 @@ function updateZone(id, payload) {
   };
 
   const checked = validatePayload(merged, data, found.id);
+  // 先留住改动前的结果字段，保存后据此判断这次修改到底会不会让换算结果变
+  const before = history().FINGERPRINT_FIELDS.reduce((acc, field) => {
+    acc[field] = found[field];
+    return acc;
+  }, {});
   Object.assign(found, checked);
-  found.updatedAt = new Date().toISOString();
+  const now = new Date().toISOString();
+  found.updatedAt = now;
+  const resultFields = history().changedResultFields(before, found);
+  history().appendChange(data, {
+    action: 'update',
+    zoneId: found.id,
+    zoneName: found.name,
+    changedAt: now,
+    // 只改备注、夏令时规则或生效年份时这里是空表，过期判定按不过期处理
+    affectsResult: resultFields.length > 0,
+    fields: resultFields,
+  });
   save(data);
   return withOffsetText(found);
 }
@@ -235,6 +263,15 @@ function deleteZone(id) {
   const index = data.zones.findIndex((item) => item.id === id);
   if (index === -1) throw new ApiError(404, 'ZONE_NOT_FOUND', '这条时区档案不存在或已被删除', '');
   const [removed] = data.zones.splice(index, 1);
+  // 档案被删后会从上一次换算结果里少一行，结果不再完整，按影响结果记
+  history().appendChange(data, {
+    action: 'delete',
+    zoneId: removed.id,
+    zoneName: removed.name,
+    changedAt: new Date().toISOString(),
+    affectsResult: true,
+    fields: [],
+  });
   save(data);
   return { id: removed.id, name: removed.name, displayName: removed.displayName };
 }

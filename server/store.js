@@ -14,6 +14,8 @@ const MAX_YEAR = 2100;
 const MAX_NAME_LENGTH = 40;
 const MAX_DISPLAY_NAME_LENGTH = 40;
 const MAX_NOTE_LENGTH = 200;
+// 档案变更日志只留最近一段，判定过期时按时间倒着找，太老的条目没有继续留着的必要
+const MAX_CHANGE_LOG = 200;
 
 // 时区档案的初始数据。十条档案里有带半小时与三刻偏移的、有南半球跨年实行夏令时的、
 // 有已经停止实行夏令时但保留生效年份区间的，也有完全不实行夏令时的
@@ -134,6 +136,40 @@ function normalizeZone(item, fallbackIndex) {
   };
 }
 
+// 上次换算结果快照的结构清洗：结构不完整一律当作没有快照
+function normalizeLastConvert(item) {
+  if (!item || typeof item !== 'object') return null;
+  if (typeof item.input !== 'object' || !item.input) return null;
+  const input = {
+    date: typeof item.input.date === 'string' ? item.input.date : '',
+    time: typeof item.input.time === 'string' ? item.input.time : '',
+    zoneId: typeof item.input.zoneId === 'string' ? item.input.zoneId : '',
+  };
+  if (!input.date || !input.time || !input.zoneId) return null;
+  if (typeof item.fingerprint !== 'string' || !item.fingerprint) return null;
+  if (typeof item.convertedAt !== 'string' || !item.convertedAt) return null;
+  if (!item.result || typeof item.result !== 'object') return null;
+  if (!Array.isArray(item.result.results)) return null;
+  return { input, fingerprint: item.fingerprint, convertedAt: item.convertedAt, result: item.result };
+}
+
+// 档案变更日志单条结构：action 只认三种，时间不合法的条目丢掉
+function normalizeZoneChange(item) {
+  if (!item || typeof item !== 'object') return null;
+  if (!['create', 'update', 'delete'].includes(item.action)) return null;
+  if (typeof item.changedAt !== 'string' || !item.changedAt) return null;
+  const at = new Date(item.changedAt);
+  if (Number.isNaN(at.getTime())) return null;
+  return {
+    action: item.action,
+    zoneId: typeof item.zoneId === 'string' ? item.zoneId : '',
+    zoneName: typeof item.zoneName === 'string' ? item.zoneName : '',
+    changedAt: item.changedAt,
+    affectsResult: item.affectsResult !== false,
+    fields: Array.isArray(item.fields) ? item.fields.filter((field) => typeof field === 'string') : [],
+  };
+}
+
 // 整份数据保证结构一致，缺名称、缺显示名的档案一律丢掉，名称重复的只留第一条
 function normalize(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
@@ -152,7 +188,11 @@ function normalize(raw) {
     zones.push(zone);
   });
 
-  return { zones };
+  const zoneChanges = Array.isArray(source.zoneChanges)
+    ? source.zoneChanges.map(normalizeZoneChange).filter(Boolean).slice(-MAX_CHANGE_LOG)
+    : [];
+
+  return { zones, lastConvert: normalizeLastConvert(source.lastConvert), zoneChanges };
 }
 
 // 读取数据文件：文件缺失或内容损坏时回落到初始数据并立刻补写

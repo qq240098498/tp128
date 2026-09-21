@@ -1,6 +1,7 @@
 const { load, WEEKDAY_NAMES } = require('./store');
 const { ApiError, pickText } = require('./errors');
-const { offsetText } = require('./zones');
+// 命名空间引用：zones 与 history、convert 之间存在循环依赖，顶部解构会拿到尚未初始化的导出
+const zonesLib = require('./zones');
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -55,15 +56,14 @@ function dayOffsetText(dayOffset) {
   return `前 ${Math.abs(dayOffset)} 天`;
 }
 
-// 换算：先把输入时刻按来源时区的偏移折算成基准时刻，再逐个时区加上各自的偏移
-function convert(options) {
-  const input = options && typeof options === 'object' ? options : {};
+// 换算本体：按给定档案集合纯计算，同样的输入与档案状态必须得到逐字段一致的结果，
+// 当前时刻由外层快照另行记录，这里不掺任何与当前时间有关的东西
+function computeConversion(input, data) {
   const date = validateDate(input.date);
   const time = validateTime(input.time);
   const zoneId = pickText(input.zoneId);
   if (!zoneId) throw new ApiError(400, 'ZONE_REQUIRED', '请选择来源时区', 'zoneId');
 
-  const data = load();
   const source = data.zones.find((item) => item.id === zoneId);
   if (!source) throw new ApiError(404, 'ZONE_NOT_FOUND', '选中的时区没有登记过', 'zoneId');
 
@@ -82,7 +82,7 @@ function convert(options) {
       name: zone.name,
       displayName: zone.displayName,
       offsetMinutes: zone.offsetMinutes,
-      offsetText: offsetText(zone.offsetMinutes),
+      offsetText: zonesLib.offsetText(zone.offsetMinutes),
       localDate: `${local.getUTCFullYear()}-${pad(local.getUTCMonth() + 1)}-${pad(local.getUTCDate())}`,
       localTime: `${pad(local.getUTCHours())}:${pad(local.getUTCMinutes())}`,
       weekday: WEEKDAY_NAMES[local.getUTCDay()],
@@ -95,9 +95,11 @@ function convert(options) {
     };
   });
 
+  // 偏移、名称都相同时用档案 id 兜底，保证同样的档案集合顺序稳定、可复现
   results.sort((a, b) => {
     if (a.offsetMinutes !== b.offsetMinutes) return a.offsetMinutes - b.offsetMinutes;
-    return a.name < b.name ? -1 : 1;
+    if (a.name !== b.name) return a.name < b.name ? -1 : 1;
+    return a.zoneId < b.zoneId ? -1 : a.zoneId > b.zoneId ? 1 : 0;
   });
 
   return {
@@ -107,7 +109,7 @@ function convert(options) {
       zoneId: source.id,
       zoneName: source.name,
       zoneDisplayName: source.displayName,
-      offsetText: offsetText(source.offsetMinutes),
+      offsetText: zonesLib.offsetText(source.offsetMinutes),
       usesDst: source.usesDst,
     },
     standard: {
@@ -118,8 +120,13 @@ function convert(options) {
     crossDayCount: results.filter((item) => item.dayOffset !== 0).length,
     maxDiffMinutes: results.reduce((acc, item) => Math.max(acc, Math.abs(item.diffMinutes)), 0),
     results,
-    convertedAt: new Date().toISOString(),
   };
 }
 
-module.exports = { convert, validateDate, validateTime, diffText, dayOffsetText };
+// 对外入口：校验输入、读取当前档案状态，再交给纯函数算
+function convert(options) {
+  const input = options && typeof options === 'object' ? options : {};
+  return computeConversion(input, load());
+}
+
+module.exports = { convert, computeConversion, validateDate, validateTime, diffText, dayOffsetText };

@@ -52,7 +52,12 @@ app.delete('/api/zones/:id', (req, res) => {
   }
 });
 
-// 换算：给一个时刻与来源时区，列出各时区对应的当地时刻
+// 取回上一次换算：结果本体照原样给，并带上是否已因档案改动而过期
+app.get('/api/convert/last', (_req, res) => {
+  res.json({ last: api.getLastConvert() });
+});
+
+// 换算：给一个时刻与来源时区，列出各时区对应的当地时刻，并把这次结果存为最新快照
 app.post('/api/convert', (req, res) => {
   try {
     res.json(api.convert(req.body || {}));

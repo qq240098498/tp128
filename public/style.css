@@ -289,6 +289,47 @@ tr.source-row td {
   font-size: 13px;
 }
 
+.stale-banner {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid #f0c2c2;
+  border-radius: 6px;
+  background: #fdeeee;
+  color: var(--danger);
+  font-size: 12.5px;
+}
+
+.stale-banner .stale-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.stale-banner .stale-list {
+  margin: 4px 0 6px;
+  padding-left: 18px;
+}
+
+.stale-banner .stale-list li {
+  margin: 2px 0;
+}
+
+.stale-banner .stale-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.stale-banner button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* 过期结果整表淡化：内容仍可查看，但一眼能看出不能直接当结论 */
+table.grid.stale {
+  opacity: 0.5;
+}
+
 .entry-form {
   margin-top: 16px;
   padding-top: 14px;

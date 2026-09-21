@@ -240,19 +240,17 @@ async function submitZone(event) {
     }
     closeZoneForm();
     await loadZones();
+    // 档案内容变了，上一次换算是否过期要按最新档案状态重判一次
+    await loadLastConvert();
   } catch (err) {
     notify(err.message, 'error');
     markField(err.field);
   }
 }
 
-async function runConvert() {
+// 用指定输入跑一遍换算；换算成功后过期标记由后端按当前档案状态重新给出，必然消失
+async function runConvertWith(payload) {
   clearNotice();
-  const payload = {
-    date: el('convert-date').value,
-    time: el('convert-time').value,
-    zoneId: el('convert-zone').value,
-  };
   try {
     const result = await request('/api/convert', { method: 'POST', body: JSON.stringify(payload) });
     state.lastConvert = result;
@@ -263,8 +261,35 @@ async function runConvert() {
   }
 }
 
+function runConvert() {
+  return runConvertWith({
+    date: el('convert-date').value,
+    time: el('convert-time').value,
+    zoneId: el('convert-zone').value,
+  });
+}
+
+// 用上一次换算留下的输入重新算，来源时区已被删掉时由后端给出说明
+function rerunLastConvert() {
+  const last = state.lastConvert;
+  if (!last || !last.input) return;
+  // 表单也回填成快照输入，避免页面上算的内容与输入框对不上
+  el('convert-date').value = last.input.date;
+  el('convert-time').value = last.input.time;
+  if (Array.from(el('convert-zone').options).some((opt) => opt.value === last.input.zoneId)) {
+    el('convert-zone').value = last.input.zoneId;
+  }
+  return runConvertWith({
+    date: last.input.date,
+    time: last.input.time,
+    zoneId: last.input.zoneId,
+  });
+}
+
 function renderConvert(result) {
   el('convert-meta').textContent = `来源 ${result.input.zoneName}（${result.input.zoneDisplayName}，${result.input.offsetText}）的 ${result.input.date} ${result.input.time}，换算时刻 ${formatTime(result.convertedAt)}；参与换算的档案 ${result.zonesInScope} 条，与来源不同天的有 ${result.crossDayCount} 条，最大时差 ${Math.floor(result.maxDiffMinutes / 60)} 小时 ${result.maxDiffMinutes % 60} 分`;
+  renderStaleBanner(result);
+  el('convert-table').classList.toggle('stale', result.stale === true);
   const body = el('convert-body');
   body.innerHTML = result.results.map((item) => `<tr class="${item.isSource ? 'source-row' : ''}">
       <td class="mono">${escapeHtml(item.name)}</td>
@@ -280,10 +305,77 @@ function renderConvert(result) {
   el('convert-empty').classList.toggle('hidden', result.results.length > 0);
 }
 
+// 结果相关字段在变更说明里的中文叫法，与后端指纹字段一一对应
+const FIELD_LABELS = {
+  name: '名称',
+  displayName: '显示名称',
+  offsetMinutes: '标准偏移',
+  usesDst: '是否实行夏令时',
+  id: '档案标识',
+};
+
+function changeLine(change) {
+  const when = escapeHtml(formatTime(change.changedAt));
+  const name = escapeHtml(change.zoneName || change.zoneId || '一条档案');
+  if (change.action === 'create') return `新增了档案 ${name}（${when}）`;
+  if (change.action === 'delete') return `删除了档案 ${name}（${when}）`;
+  const fields = (change.fields || []).map((field) => FIELD_LABELS[field] || field).join('、');
+  return `修改了档案 ${name}${fields ? `的 ${escapeHtml(fields)}` : ''}（${when}）`;
+}
+
+// 过期横幅：写清是哪条档案在什么时候动的，并声明内容仅供查看、不能当最新结论
+function renderStaleBanner(result) {
+  const box = el('convert-stale');
+  if (result.stale !== true) {
+    box.className = 'stale-banner hidden';
+    box.innerHTML = '';
+    return;
+  }
+  const convertedAt = escapeHtml(formatTime(result.convertedAt));
+  const changes = result.staleChanges || [];
+  const list = changes.length
+    ? `<ul class="stale-list">${changes.map((change) => `<li>${changeLine(change)}</li>`).join('')}</ul>`
+    : '<div>换算之后档案内容被改动过，但没有留下具体的改动记录。</div>';
+  box.className = 'stale-banner';
+  box.innerHTML = `
+    <div class="stale-title">这份换算结果已过期</div>
+    <div>上次换算在 ${convertedAt}，之后有档案发生了会影响换算结果的改动。下面的内容仍然可以查看，但不能作为最新结论带走。</div>
+    ${list}
+    <div class="stale-actions">
+      <button type="button" data-convert-rerun="1">用上次输入重新换算</button>
+      <span>重新换算后此标记消失</span>
+    </div>`;
+}
+
+function resetConvertPanel() {
+  state.lastConvert = null;
+  el('convert-meta').textContent = '还没有换算过，填好日期、时刻与来源时区点右侧按钮';
+  el('convert-body').innerHTML = '';
+  el('convert-empty').classList.remove('hidden');
+  const box = el('convert-stale');
+  box.className = 'stale-banner hidden';
+  box.innerHTML = '';
+  el('convert-table').classList.remove('stale');
+}
+
+// 页面打开或档案变动后取回上一次换算：结果本体不变，只更新它是否已过期
+async function loadLastConvert() {
+  const payload = await request('/api/convert/last');
+  const last = payload.last || null;
+  state.lastConvert = last;
+  if (last) renderConvert(last);
+  else resetConvertPanel();
+}
+
 // 列表上的操作用事件委托统一处理，列表重绘之后不需要重新绑定
 document.addEventListener('click', async (event) => {
   const node = event.target.closest('button');
   if (!node) return;
+
+  if (node.dataset.convertRerun !== undefined) {
+    await rerunLastConvert();
+    return;
+  }
 
   if (node.dataset.zoneEdit) {
     clearNotice();
@@ -301,6 +393,8 @@ document.addEventListener('click', async (event) => {
       if (state.editingId === node.dataset.zoneDelete) closeZoneForm();
       notify('时区档案已删除', 'ok');
       await loadZones();
+      // 档案少了一条，上一次换算可能已经过期，顺带把标记刷新出来
+      await loadLastConvert();
     } catch (err) {
       notify(err.message, 'error');
     }
@@ -324,7 +418,10 @@ el('zone-filter-reset').addEventListener('click', () => {
 });
 el('zone-refresh').addEventListener('click', () => {
   clearNotice();
-  loadZones().catch((err) => notify(err.message, 'error'));
+  // 刷新可能拉到别处改过的档案，顺手把上次换算的过期标记也按最新状态重判
+  loadZones()
+    .then(() => loadLastConvert())
+    .catch((err) => notify(err.message, 'error'));
 });
 el('zone-filter-dst').addEventListener('change', () => {
   loadZones().catch((err) => notify(err.message, 'error'));
@@ -334,11 +431,14 @@ el('operator').addEventListener('change', () => {
   window.localStorage.setItem(OPERATOR_KEY, currentOperator());
 });
 
-// 页面打开时先把档案拉一遍，换算台的来源时区下拉按这份清单填
+// 页面打开时先把档案拉一遍，换算台的来源时区下拉按这份清单填，
+// 再取回上一次换算：它的过期状态按此刻的档案状态判定
 fillOptions();
 restoreOperator();
 loadHealth();
 const now = new Date();
 el('convert-date').value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 el('convert-time').value = '09:30';
-loadZones().catch((err) => notify(err.message, 'error'));
+loadZones()
+  .then(() => loadLastConvert())
+  .catch((err) => notify(err.message, 'error'));
