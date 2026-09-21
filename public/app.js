@@ -5,6 +5,7 @@ const state = {
   counts: { total: 0, dstCount: 0, noDstCount: 0 },
   editingId: '',
   lastConvert: null,
+  archiveState: null,
 };
 
 const MONTHS = [
@@ -132,6 +133,64 @@ async function loadZones() {
   state.counts = { total: payload.total || 0, dstCount: payload.dstCount || 0, noDstCount: payload.noDstCount || 0 };
   renderZones();
   renderConvertZoneOptions();
+  await loadArchiveState();
+}
+
+// 档案状态快照：每次清单刷新都顺手拉一遍，好跟上次换算时的快照对照出哪条档案被改过
+async function loadArchiveState() {
+  const payload = await request('/api/archive');
+  state.archiveState = payload;
+  updateStaleness();
+}
+
+// 过期判定：换算条件（方案）与档案状态，任何一边跟上一次换算时对不上都算过期；
+// 档案只改备注时内容指纹不变，不算过期
+function computeStaleReasons() {
+  const last = state.lastConvert;
+  if (!last) return [];
+  const reasons = [];
+
+  if (el('convert-date').value !== last.input.date
+    || el('convert-time').value !== last.input.time
+    || el('convert-zone').value !== last.input.zoneId) {
+    reasons.push('换算条件已改动：当前的日期、时刻或来源时区与上次换算时不同');
+  }
+
+  const current = state.archiveState;
+  if (current && last.archive) {
+    const before = new Map(last.archive.zones.map((zone) => [zone.id, zone]));
+    const now = new Map(current.zones.map((zone) => [zone.id, zone]));
+    current.zones.forEach((zone) => {
+      const prev = before.get(zone.id);
+      if (!prev) {
+        reasons.push(`新增了档案 ${zone.name}（${zone.displayName}）`);
+      } else if (prev.contentHash !== zone.contentHash) {
+        reasons.push(`档案 ${zone.name}（${zone.displayName}）在 ${formatTime(zone.updatedAt)} 被修改`);
+      }
+    });
+    last.archive.zones.forEach((zone) => {
+      if (!now.has(zone.id)) reasons.push(`档案 ${zone.name}（${zone.displayName}）已被删除`);
+    });
+  }
+  return reasons;
+}
+
+// 过期结果留在页面上可以看，但要压暗并挂上说明，不能被当作最新结论带走
+function updateStaleness() {
+  const reasons = computeStaleReasons();
+  const stale = reasons.length > 0;
+  const hasResult = state.lastConvert !== null;
+
+  el('convert-panel').classList.toggle('stale', stale);
+  el('stale-banner').classList.toggle('hidden', !stale);
+  el('stale-reasons').innerHTML = reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join('');
+
+  el('convert-chips').classList.toggle('hidden', !hasResult);
+  if (hasResult) {
+    const status = el('chip-status');
+    status.textContent = stale ? '已过期' : '最新结果';
+    status.className = `chip ${stale ? 'stale' : 'ok'}`;
+  }
 }
 
 function renderZones() {
@@ -254,17 +313,25 @@ async function runConvert() {
     zoneId: el('convert-zone').value,
   };
   try {
+    const previous = state.lastConvert;
     const result = await request('/api/convert', { method: 'POST', body: JSON.stringify(payload) });
     state.lastConvert = result;
-    renderConvert(result);
+    // 服务端刚按这份档案状态算完，直接拿它当对照基准，过期标记随之消失
+    state.archiveState = result.archive;
+    renderConvert(result, previous);
+    updateStaleness();
   } catch (err) {
     notify(err.message, 'error');
     markField(err.field);
   }
 }
 
-function renderConvert(result) {
+function renderConvert(result, previous) {
   el('convert-meta').textContent = `来源 ${result.input.zoneName}（${result.input.zoneDisplayName}，${result.input.offsetText}）的 ${result.input.date} ${result.input.time}，换算时刻 ${formatTime(result.convertedAt)}；参与换算的档案 ${result.zonesInScope} 条，与来源不同天的有 ${result.crossDayCount} 条，最大时差 ${Math.floor(result.maxDiffMinutes / 60)} 小时 ${result.maxDiffMinutes % 60} 分`;
+  el('chip-fingerprint').textContent = `结果指纹 ${result.fingerprint}`;
+  // 同样的输入加同样的档案状态连算两遍，指纹必然相同，页面直接把这个稳定性亮出来
+  const stable = previous && previous.fingerprint === result.fingerprint;
+  el('chip-stable').classList.toggle('hidden', !stable);
   const body = el('convert-body');
   body.innerHTML = result.results.map((item) => `<tr class="${item.isSource ? 'source-row' : ''}">
       <td class="mono">${escapeHtml(item.name)}</td>
@@ -330,6 +397,11 @@ el('zone-filter-dst').addEventListener('change', () => {
   loadZones().catch((err) => notify(err.message, 'error'));
 });
 el('convert-run').addEventListener('click', runConvert);
+// 换算条件一动，上一次结果就不再对应当前方案，立刻标过期
+['convert-date', 'convert-time', 'convert-zone'].forEach((id) => {
+  el(id).addEventListener('input', updateStaleness);
+  el(id).addEventListener('change', updateStaleness);
+});
 el('operator').addEventListener('change', () => {
   window.localStorage.setItem(OPERATOR_KEY, currentOperator());
 });

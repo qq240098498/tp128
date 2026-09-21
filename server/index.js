@@ -52,6 +52,11 @@ app.delete('/api/zones/:id', (req, res) => {
   }
 });
 
+// 档案状态快照：换算结果拿它对照，判断上一次换算之后档案有没有被改过
+app.get('/api/archive', (_req, res) => {
+  res.json(api.archiveState());
+});
+
 // 换算：给一个时刻与来源时区，列出各时区对应的当地时刻
 app.post('/api/convert', (req, res) => {
   try {

@@ -1,6 +1,7 @@
+const crypto = require('crypto');
 const { load, WEEKDAY_NAMES } = require('./store');
 const { ApiError, pickText } = require('./errors');
-const { offsetText } = require('./zones');
+const { offsetText, archiveState } = require('./zones');
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -100,7 +101,9 @@ function convert(options) {
     return a.name < b.name ? -1 : 1;
   });
 
-  return {
+  // 结果指纹：覆盖输入、基准时刻、统计与每一行结果，唯独不含换算时刻 convertedAt，
+  // 因此同样的输入加同样的档案状态连算两遍，指纹与全部内容完全一致
+  const content = {
     input: {
       date: date.text,
       time: time.text,
@@ -118,6 +121,13 @@ function convert(options) {
     crossDayCount: results.filter((item) => item.dayOffset !== 0).length,
     maxDiffMinutes: results.reduce((acc, item) => Math.max(acc, Math.abs(item.diffMinutes)), 0),
     results,
+  };
+  const fingerprint = crypto.createHash('sha256').update(JSON.stringify(content)).digest('hex').slice(0, 16);
+
+  return {
+    ...content,
+    fingerprint,
+    archive: archiveState(data),
     convertedAt: new Date().toISOString(),
   };
 }

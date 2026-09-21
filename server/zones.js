@@ -162,6 +162,44 @@ function sortZones(list) {
   });
 }
 
+// 档案内容指纹：只覆盖会影响换算结果的字段（名称、显示名、偏移、夏令时四段与生效年份），
+// 备注、登记时间、修改时间不参与——只动备注时指纹不变，上一次换算不算过期
+function zoneContentHash(zone) {
+  const rule = (part) => (part ? {
+    month: part.month, week: part.week, weekday: part.weekday, hour: part.hour, minute: part.minute,
+  } : null);
+  const content = {
+    id: zone.id,
+    name: zone.name,
+    displayName: zone.displayName,
+    offsetMinutes: zone.offsetMinutes,
+    usesDst: zone.usesDst,
+    dstOffsetMinutes: zone.dstOffsetMinutes,
+    dstStart: rule(zone.dstStart),
+    dstEnd: rule(zone.dstEnd),
+    fromYear: zone.fromYear,
+    toYear: zone.toYear,
+  };
+  return crypto.createHash('sha256').update(JSON.stringify(content)).digest('hex').slice(0, 16);
+}
+
+// 档案状态快照：换算时存一份，之后拿来任何一条档案的内容指纹变了都能对出来是哪条、什么时候改的
+function archiveState(loaded) {
+  const data = loaded && typeof loaded === 'object' && Array.isArray(loaded.zones) ? loaded : load();
+  const zones = sortZones(data.zones).map((zone) => ({
+    id: zone.id,
+    name: zone.name,
+    displayName: zone.displayName,
+    updatedAt: zone.updatedAt,
+    contentHash: zoneContentHash(zone),
+  }));
+  const version = crypto.createHash('sha256')
+    .update(zones.map((zone) => `${zone.id}:${zone.contentHash}`).sort().join('|'))
+    .digest('hex')
+    .slice(0, 16);
+  return { version, zones };
+}
+
 // 档案清单：按是否实行夏令时筛选，再按名称、显示名或备注搜索
 function listZones(options) {
   const input = options && typeof options === 'object' ? options : {};
@@ -247,4 +285,6 @@ module.exports = {
   deleteZone,
   offsetText,
   withOffsetText,
+  zoneContentHash,
+  archiveState,
 };
